@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# new-project.sh — Bootstrap a new project from dev-studio-template.
+#
+# Scope (A1):
+#   1. Create new private repo from atilcan65/dev-studio-template
+#   2. Clone it locally
+#   3. Run scripts/dev-studio-init.sh (placeholder render)
+#   4. Run scripts/bootstrap-labels.sh (seed 34 labels)
+#
+# Does NOT:
+#   - Run e2e smoke test (caller can run manually after)
+#   - Start tmux session (caller runs dev-studio-start.sh when ready)
+#   - Open Vision Intake issue (intentionally — human writes vision body)
+#
+# Usage:
+#   ./new-project.sh <project-name> [--owner <github-owner>] [--dir <parent-dir>]
+#
+# Examples:
+#   ./new-project.sh AtilCalculator
+#   ./new-project.sh book-tracker --dir ~/projects
+#   ./new-project.sh stock-watcher --owner atilcan65 --dir /tmp
+#
+# Defaults:
+#   --owner   atilcan65
+#   --dir     current working directory
+#
+# Exit codes:
+#   0  success
+#   1  bad usage
+#   2  preflight failed (gh/git/jq missing or unauthenticated)
+#   3  repo already exists
+#   4  gh repo create failed
+#   5  init script failed
+#   6  bootstrap-labels failed
+
+set -euo pipefail
+
+# ---------- defaults ----------
+TEMPLATE_REPO="atilcan65/dev-studio-template"
+DEFAULT_OWNER="atilcan65"
+
+# ---------- colors ----------
+if [[ -t 1 ]]; then
+  C_RESET=$'\e[0m'
+  C_RED=$'\e[31m'
+  C_GREEN=$'\e[32m'
+  C_YELLOW=$'\e[33m'
+  C_BLUE=$'\e[34m'
+  C_BOLD=$'\e[1m'
+else
+  C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_BOLD=""
+fi
+
+step()  { echo -e "${C_BLUE}${C_BOLD}[step]${C_RESET} $*"; }
+ok()    { echo -e "${C_GREEN}[ ok ]${C_RESET} $*"; }
+warn()  { echo -e "${C_YELLOW}[warn]${C_RESET} $*"; }
+err()   { echo -e "${C_RED}${C_BOLD}[fail]${C_RESET} $*" >&2; }
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") <project-name> [--owner <owner>] [--dir <parent-dir>]
+
+Creates a new private GitHub repo from the dev-studio-template, clones it,
+runs the init script, and seeds labels.
+
+Arguments:
+  <project-name>     Repository name (kebab-case or PascalCase). Required.
+
+Options:
+  --owner <owner>    GitHub owner/org. Default: ${DEFAULT_OWNER}
+  --dir <parent>     Parent directory for the clone. Default: \$PWD
+  -h, --help         Show this help.
+
+Examples:
+  $(basename "$0") AtilCalculator
+  $(basename "$0") book-tracker --dir ~/projects
+EOF
+}
+
+# ---------- arg parse ----------
+PROJECT_NAME=""
+OWNER="$DEFAULT_OWNER"
+PARENT_DIR="$PWD"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --owner) OWNER="${2:-}"; shift 2 ;;
+    --dir)   PARENT_DIR="${2:-}"; shift 2 ;;
+    --*) err "Unknown option: $1"; usage; exit 1 ;;
+    *)
+      if [[ -z "$PROJECT_NAME" ]]; then
+        PROJECT_NAME="$1"; shift
+      else
+        err "Unexpected argument: $1"; usage; exit 1
+      fi
+      ;;
+  esac
+done
+
+if [[ -z "$PROJECT_NAME" ]]; then
+  err "project-name is required"
+  usage
+  exit 1
+fi
+
+# Validate name: alphanumeric + hyphen + underscore, 1-64 chars
+if [[ ! "$PROJECT_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+  err "Invalid project name: '$PROJECT_NAME'"
+  err "Must start with alphanumeric; only letters, digits, '.', '-', '_' allowed; max 64 chars."
+  exit 1
+fi
+
+# Validate owner
+if [[ ! "$OWNER" =~ ^[A-Za-z0-9-]{1,39}$ ]]; then
+  err "Invalid owner: '$OWNER'"
+  exit 1
+fi
+
+# Resolve parent dir
+if [[ ! -d "$PARENT_DIR" ]]; then
+  err "Parent directory does not exist: $PARENT_DIR"
+  exit 1
+fi
+PARENT_DIR="$(cd "$PARENT_DIR" && pwd)"
+CLONE_PATH="$PARENT_DIR/$PROJECT_NAME"
+
+# ---------- preflight ----------
+step "preflight checks"
+
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    err "Required command not found: $1"
+    exit 2
+  fi
+}
+need_cmd gh
+need_cmd git
+need_cmd jq
+
+if ! gh auth status >/dev/null 2>&1; then
+  err "gh is not authenticated. Run: gh auth login"
+  exit 2
+fi
+
+GIT_USER_NAME="$(git config --global user.name 2>/dev/null || true)"
+GIT_USER_EMAIL="$(git config --global user.email 2>/dev/null || true)"
+if [[ -z "$GIT_USER_NAME" || -z "$GIT_USER_EMAIL" ]]; then
+  err "git global user.name and user.email must be set."
+  err "Run:"
+  err "  git config --global user.name '<your name>'"
+  err "  git config --global user.email '<your@email>'"
+  exit 2
+fi
+
+# Repo already exists?
+if gh repo view "$OWNER/$PROJECT_NAME" >/dev/null 2>&1; then
+  err "Repo already exists on GitHub: $OWNER/$PROJECT_NAME"
+  err "Either pick another name, or delete it first:"
+  err "  gh repo delete $OWNER/$PROJECT_NAME --yes"
+  exit 3
+fi
+
+# Local clone path already exists?
+if [[ -e "$CLONE_PATH" ]]; then
+  err "Local path already exists: $CLONE_PATH"
+  err "Remove or rename it, then re-run."
+  exit 3
+fi
+
+# Template exists + accessible?
+if ! gh repo view "$TEMPLATE_REPO" >/dev/null 2>&1; then
+  err "Template repo not accessible: $TEMPLATE_REPO"
+  err "Check your gh auth + access to that repo."
+  exit 2
+fi
+
+ok "preflight passed"
+echo "  owner:     $OWNER"
+echo "  project:   $PROJECT_NAME"
+echo "  template:  $TEMPLATE_REPO"
+echo "  clone to:  $CLONE_PATH"
+echo ""
+
+# ---------- 1) Create + clone ----------
+step "creating repo from template"
+cd "$PARENT_DIR"
+
+if ! gh repo create "$OWNER/$PROJECT_NAME" \
+      --template "$TEMPLATE_REPO" \
+      --private \
+      --clone; then
+  err "gh repo create failed"
+  exit 4
+fi
+ok "repo created and cloned"
+
+cd "$CLONE_PATH"
+
+# ---------- 2) Init (placeholder render) ----------
+step "running dev-studio-init.sh"
+if [[ ! -x "scripts/dev-studio-init.sh" ]]; then
+  err "scripts/dev-studio-init.sh missing or not executable"
+  err "Template may be broken or this repo wasn't created from the right template."
+  exit 5
+fi
+
+if ! ./scripts/dev-studio-init.sh; then
+  err "dev-studio-init.sh failed"
+  err "Inspect output above. Repo is at: $CLONE_PATH"
+  exit 5
+fi
+ok "init complete"
+
+# ---------- 3) Bootstrap labels ----------
+step "running bootstrap-labels.sh"
+if [[ ! -x "scripts/bootstrap-labels.sh" ]]; then
+  err "scripts/bootstrap-labels.sh missing or not executable"
+  exit 6
+fi
+
+if ! ./scripts/bootstrap-labels.sh; then
+  err "bootstrap-labels.sh failed"
+  err "Re-run manually: ./scripts/bootstrap-labels.sh"
+  exit 6
+fi
+ok "labels seeded"
+
+# ---------- 4) Commit rendered templates ----------
+step "checking for rendered template changes to commit"
+cd "$CLONE_PATH"
+if ! git diff --quiet || [[ -n "$(git ls-files --others --exclude-standard)" ]]; then
+  git add -A
+  git commit -m "chore: render templates and bootstrap project
+
+Run by new-project.sh launcher:
+  - dev-studio-init.sh resolved placeholders (12 templates)
+  - bootstrap-labels.sh seeded labels on remote
+
+Project: $OWNER/$PROJECT_NAME"
+  if git push origin HEAD; then
+    ok "rendered changes pushed to main"
+  else
+    warn "git push failed — commit is local. Push manually:"
+    warn "  cd $CLONE_PATH && git push origin HEAD"
+  fi
+else
+  ok "no rendered changes to commit (already clean)"
+fi
+
+# ---------- Summary ----------
+echo ""
+echo "${C_GREEN}${C_BOLD}========================================${C_RESET}"
+echo "${C_GREEN}${C_BOLD}  ✓ Project ready: $OWNER/$PROJECT_NAME${C_RESET}"
+echo "${C_GREEN}${C_BOLD}========================================${C_RESET}"
+echo ""
+echo "Repo:    https://github.com/$OWNER/$PROJECT_NAME"
+echo "Local:   $CLONE_PATH"
+echo ""
+echo "${C_BOLD}Next steps:${C_RESET}"
+echo "  cd $CLONE_PATH"
+echo ""
+echo "  # (recommended) Validate the install:"
+echo "  ./scripts/tests/e2e-pilot.sh         # expect 29/29 PASS"
+echo ""
+echo "  # When ready to start agents:"
+echo "  ./scripts/dev-studio-start.sh        # opens tmux session"
+echo ""
+echo "  # Open the Vision Intake issue:"
+echo "  gh issue create --template vision-intake.yml"
+echo ""

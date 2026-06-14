@@ -1,0 +1,139 @@
+# dev-studio-launcher
+
+> Bootstrap new projects from [`atilcan65/dev-studio-template`](https://github.com/atilcan65/dev-studio-template) with one command.
+
+## What
+
+A tiny shell script (`new-project.sh`) that automates the first 3 steps of starting a new multi-agent dev studio project:
+
+1. Create a new private GitHub repo from `dev-studio-template`
+2. Clone it locally
+3. Run `dev-studio-init.sh` (render templates) + `bootstrap-labels.sh` (seed labels)
+4. Commit + push the rendered template changes
+
+What it intentionally **does not** do (kept manual by design):
+
+- Run the e2e smoke test (run it yourself when you want to validate)
+- Start the tmux session / Claude Code agents (start when you're ready)
+- Open the Vision Intake issue (write your vision thoughtfully, not in haste)
+
+This is the **A1 + B1 + C2** decision: minimal automation, positional arg, separate launcher repo.
+
+## Why a separate repo?
+
+Putting the launcher inside `dev-studio-template` creates a chicken-and-egg problem: you need to clone something to launch a new project from the template. Keeping the launcher in its own repo means:
+
+- One-time setup: clone this repo to a stable path (e.g. `~/dev-studio-launcher`)
+- Symlink the script into `~/bin/` for global access
+- Versioned independently; template fixes don't force launcher updates
+
+## Prerequisites
+
+| Tool | Why | Install |
+|---|---|---|
+| `gh` CLI | Authenticated GitHub operations | `sudo apt install gh` + `gh auth login` |
+| `git` | Clone + commit + push | `sudo apt install git` |
+| `jq` | Used by template scripts | `sudo apt install jq` |
+| `tmux` | For `dev-studio-start.sh` later | `sudo apt install tmux` |
+
+And `git config --global user.name` + `user.email` must be set.
+
+## Setup (one-time)
+
+```bash
+# Clone this repo somewhere stable
+git clone https://github.com/atilcan65/dev-studio-launcher.git ~/dev-studio-launcher
+
+# Symlink for global access
+mkdir -p ~/bin
+ln -sf ~/dev-studio-launcher/new-project.sh ~/bin/new-project.sh
+# Ensure ~/bin is on $PATH (most distros already do this)
+```
+
+## Usage
+
+```bash
+new-project.sh <project-name> [--owner <owner>] [--dir <parent-dir>]
+```
+
+### Examples
+
+```bash
+# Create AtilCalculator in current dir
+new-project.sh AtilCalculator
+
+# Create in ~/projects
+new-project.sh book-tracker --dir ~/projects
+
+# Use a different owner
+new-project.sh stock-watcher --owner my-org --dir /tmp
+```
+
+### What happens
+
+```
+[step] preflight checks
+[ ok ] preflight passed
+[step] creating repo from template
+[ ok ] repo created and cloned
+[step] running dev-studio-init.sh
+[ ok ] init complete
+[step] running bootstrap-labels.sh
+[ ok ] labels seeded
+[step] checking for rendered template changes to commit
+[ ok ] rendered changes pushed to main
+
+========================================
+  ✓ Project ready: atilcan65/AtilCalculator
+========================================
+```
+
+Takes about 30-60 seconds depending on network.
+
+## What's next (after the launcher finishes)
+
+```bash
+cd <project-name>
+
+# Validate (recommended, ~2 min):
+./scripts/tests/e2e-pilot.sh    # expect 29/29 PASS
+
+# When ready to work:
+./scripts/dev-studio-start.sh   # opens tmux session
+gh issue create --template vision-intake.yml   # kick off the agents
+```
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 1 | Bad usage / invalid args |
+| 2 | Preflight failed (missing tool, unauthenticated, etc.) |
+| 3 | Repo or local path already exists |
+| 4 | `gh repo create` failed |
+| 5 | `dev-studio-init.sh` failed |
+| 6 | `bootstrap-labels.sh` failed |
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `Required command not found: gh` | `sudo apt install gh` |
+| `gh is not authenticated` | `gh auth login` |
+| `Repo already exists on GitHub` | Delete first: `gh repo delete <owner>/<name> --yes` |
+| `Local path already exists` | Remove or rename the local dir, re-run |
+| Init fails mid-way | Inspect `dev-studio-init.sh` output; the partial clone is at the dir |
+| Labels skipped | Re-run manually: `cd <project> && ./scripts/bootstrap-labels.sh` |
+
+## Versioning
+
+Stays in sync with `dev-studio-template`. When the template adds breaking changes to its init script API, this launcher gets a matching version bump.
+
+| Launcher version | Template commit | Notes |
+|---|---|---|
+| 0.1.0 | `00a7101` (P3 + P7b) | Initial launcher; A1 scope |
+
+## License
+
+MIT.
